@@ -5,14 +5,15 @@ const bcrypt = require("bcrypt");
 const bodyParser = require("body-parser");
 const nodemailer = require("nodemailer");
 const jwt = require("jsonwebtoken");
-const { v4: uuidv4 } = require('uuid');
 
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT;
 
-app.use(cors());
+app.use(cors({
+    origin: '*'
+}));
 app.use(bodyParser.json()); 
 
 let lastEmployeeId = 240; 
@@ -22,7 +23,7 @@ const generateEmployeeId = () => {
   return `GTS${lastEmployeeId}`;
 };
 
-const db = new sqlite3.Database("HRMdb4.db", (err) => {
+const db = new sqlite3.Database("HRMdb1.db", (err) => {
     if (err) {
         console.error("Failed to connect to the database");
     } else {
@@ -30,9 +31,11 @@ const db = new sqlite3.Database("HRMdb4.db", (err) => {
 
         db.run(`
             CREATE TABLE IF NOT EXISTS Employee (
-            ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 EmployeeID VARCHAR(10) UNIQUE NOT NULL, 
                 FullName VARCHAR(24) NOT NULL,
+                FirstName VARCHAR(24),
+                LastName VARCHAR(24),
                 WorkEmail VARCHAR(32) UNIQUE NOT NULL,
                 Role TEXT DEFAULT 'Employee',
                 designation VARCHAR(50) DEFAULT 'Software Developer',
@@ -46,7 +49,7 @@ const db = new sqlite3.Database("HRMdb4.db", (err) => {
                 State TEXT,
                 Country TEXT,
                 PinCode INTEGER,
-                About_Yourself TEXT NOT NULL,
+                About_Yourself ,
                 Password TEXT NOT NULL   
              )`);
         db.run(`CREATE TABLE IF NOT EXISTS AttendanceLog (
@@ -72,14 +75,28 @@ const db = new sqlite3.Database("HRMdb4.db", (err) => {
             StartTime TIME NOT NULL,
             EndTime TIME NOT NULL,
             eventType TEXT NOT NULL,
-            FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID),
-            FOREIGN KEY (WorkEmail) REFERENCES Employee(WorkEmail)
+            FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID)
             )`);
+            db.run(`CREATE TABLE IF NOT EXISTS LeaveRequests (
+                LeaveID INTEGER PRIMARY KEY AUTOINCREMENT,
+                EmployeeID INTEGER NOT NULL,
+                FromDate DATE NOT NULL,
+                ToDate DATE NOT NULL,
+                FromTime TIME NOT NULL,
+                ToTime TIME NOT NULL,
+                LeaveType TEXT NOT NULL,
+                Reason TEXT NOT NULL,
+                Status TEXT DEFAULT 'Pending', -- Pending, Approved, Rejected
+                AppliedOn TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (EmployeeID) REFERENCES Employee(EmployeeID)
+            )`);
+
 
         // Insert admin user if not exists
         const adminEmail = process.env.ADMIN_EMAIL;
         const adminPassword = process.env.ADMIN_PASSWORD;
         const adminFullName = "Admin";
+        const admindesgination = "Founder and CEO";
         const adminCompany = "HRM Company";
         const adminGender = "Other";
         const adminDateOfBirth = "1970-01-01";
@@ -97,8 +114,8 @@ const db = new sqlite3.Database("HRMdb4.db", (err) => {
             } else if (!row) {
                 const hashedPassword = await bcrypt.hash(adminPassword, 8);
                 const adminEmployeeID = generateEmployeeId();
-                const insertAdminQuery = `INSERT INTO Employee (EmployeeID, FullName, WorkEmail, Role, Company, Gender, DateOfBirth, Country, About_Yourself, Password) VALUES (?, ?, ?, 'Admin', ?, ?, ?, ?, ?, ?)`;
-                db.run(insertAdminQuery, [adminEmployeeID, adminFullName, adminEmail, adminCompany, adminGender, adminDateOfBirth, adminCountry, adminAboutYourself, hashedPassword], (err) => {
+                const insertAdminQuery = `INSERT INTO Employee (EmployeeID, FullName, WorkEmail, Role, Company,designation, Gender, DateOfBirth, Country, About_Yourself, Password) VALUES (?, ?, ?, 'Admin', ?, ?, ?, ?, ?,?, ?)`;
+                db.run(insertAdminQuery, [adminEmployeeID, adminFullName, adminEmail, adminCompany,admindesgination, adminGender, adminDateOfBirth, adminCountry, adminAboutYourself, hashedPassword], (err) => {
                     if (err) {
                         console.error("Error inserting admin user:", err);
                     } else {
@@ -149,7 +166,6 @@ function authorizeRole(requiredRoles = []) {
             req.user = decoded;
             next();
         } catch (err) {
-            console.error('JWT verification failed:', err);
             return res.status(401).json({ error: 'Unauthorized: Invalid token' });
         }
     };
@@ -406,8 +422,10 @@ app.post("/login", async (req, res) => {
                     logDate: currentDate,
                     logTime: currentTime,
                     message: "Login successful",
+                    role: user.Role,
+                    desgination: user.designation,
                     token: token,
-                    role: user.Role
+
 
                 },
             });
@@ -603,14 +621,16 @@ app.get("/employee", authorizeRole(['Admin','Employee']), (req, res) => {
 
 
 app.post("/events", authorizeRole('Employee'), (req, res) => {
-    const { title, date, startTime, endTime, eventType } = req.body; // Ensure the field name matches the client expectation
-    const usermail = req.user.email
-    if (!usermail ||!title || !date || !startTime || !endTime || !eventType) {
+    const { title, date, startTime, endTime, type } = req.body; // Ensure the field name matches the client expectation
+    const usermail = req.user.email;
+    const employeeid_event = req.user.id;
+    
+    if (!usermail || !title || !date || !startTime || !endTime || !type) {
         return res.status(400).json({ error: "All fields are required" });
     }
 
-    const query = `INSERT INTO Events(WorkEmail, title, Date, startTime, EndTime, eventType) VALUES (?, ?, ?, ?, ?, ?)`;
-    db.run(query, [usermail, title, date, startTime, endTime, eventType], function (err) {
+    const query = `INSERT INTO Events(EmployeeID,WorkEmail, title, Date, startTime, EndTime, eventType) VALUES (?, ?, ?, ?, ?, ?,?)`;
+    db.run(query, [employeeid_event,usermail, title, date, startTime, endTime, type], function (err) {
         if (err) {
             console.error("Database insertion error:", err.message);
             return res.status(500).json({ error: "Error while inserting event" });
@@ -707,7 +727,7 @@ app.get('/employee/:employeeID', authorizeRole(['Admin']), (req, res) => {
     const employeeID = req.params.employeeID;
 
     const query = `
-        SELECT EmployeeID, FullName, WorkEmail, Role, designation, phone, startdate, Company, Gender, DateOfBirth, Address, City, State, Country, PinCode, About_Yourself
+        SELECT EmployeeID, FullName, FirstName, LastName, WorkEmail, Role, designation, phone, startdate, Company, Address, City, State, Country, PinCode, Gender, DateOfBirth, About_Yourself
         FROM Employee
         WHERE EmployeeID = ?
     `;
@@ -731,7 +751,7 @@ app.get('/attendance/:employeeID', authorizeRole(['Admin']), (req, res) => {
     const employeeID = req.params.employeeID;
 
     const query = `
-        SELECT 
+        SELECT *
         FROM AttendanceLog a
         WHERE a.WorkEmail = (SELECT WorkEmail FROM Employee WHERE EmployeeID = ?)
         ORDER BY a.Logdate DESC
@@ -750,6 +770,270 @@ app.get('/attendance/:employeeID', authorizeRole(['Admin']), (req, res) => {
         res.status(200).json({ attendanceLogs: rows });
     });
 });
+
+// Register Employee API
+app.post("/registeremployee", authorizeRole('Admin'), async (req, res) => {
+    const { fullname, firstName, lastName, email, phone, dateOfBirth, department, position, startDate, streetAddress, city, state, zipCode,country, gender, about, company } = req.body;
+    console.log(req.body)
+
+    if (!fullname || !firstName || !lastName || !email || !phone || !dateOfBirth || !department || !position || !startDate || !streetAddress || !city || !state || !zipCode || !country ||!gender || !about || !company) {
+        console.log("All fields are required")
+        return res.status(400).json({ message: "All fields are required" });
+    }
+
+    const EmployeeID = generateEmployeeId();
+    const randomPassword = generateRandomPassword();
+    const hashedPassword = await bcrypt.hash(randomPassword, 8);
+
+    const insertQuery = `INSERT INTO Employee (EmployeeID, FullName, FirstName, LastName, WorkEmail, Role, designation, phone, startdate, Company, Address, City, State, PinCode,Country, Gender, DateOfBirth, About_Yourself, Password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?, ?, ?)`;
+
+    db.run(insertQuery, [EmployeeID, fullname, firstName, lastName, email, department, position, phone, startDate, company, streetAddress, city, state, zipCode,country, gender, dateOfBirth, about, hashedPassword], function (err) {
+        if (err) {
+            console.error("Database insertion error:", err);
+            return res.status(500).json({ message: "Error during employee registration" });
+        }
+
+        // Send Initial Boarding Email
+        const initialBoardingMailOptions = {
+            from: process.env.EMAIL_USER,
+            to: email,
+            subject: "Welcome to Gollamudi Technology and Software",
+            html: `
+                <div style="font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; border-radius: 8px; max-width: 600px; margin: auto; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                    <div style="text-align: center; margin-bottom: 20px;">
+                        <img src="https://gtsprojects.vercel.app/static/media/logo.b577779c31c6d4b7ee27.jpeg" 
+                            alt="Welcome Image" 
+                            style="max-width: 100px; height: auto; border-radius: 50%;" />
+                    </div>
+                    <p style="font-size: 18px; color: #333; text-align: center; font-weight: bold; margin: 0;">
+                        Welcome to the HRM Platform!
+                    </p>
+                    <p style="font-size: 16px; color: #555; text-align: center; margin:10px 75% 10px 0px;">
+                        Dear <strong>${fullname}</strong>,
+                    </p>
+                    <p style="font-size: 14px; line-height: 1.6; color: #666; text-align: justify;">
+                    We are thrilled to have you join Gollamudi Technology and Software as our new ${position}! Your skills and experience will be a great addition to our team, and we are eager to collaborate with you on exciting projects.
+                                <p>If you have any questions, feel free to reach out to us at <a href="mailto:support@gts.com" style="color: #c0492f;">support@gts.com</a>.</p>
+
+                    <p style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
+                        Best regards,<br>
+                        <strong>Gollamudi technology and Software</strong>
+                    </p>
+                </div>
+            `
+        };
+
+        transporter.sendMail(initialBoardingMailOptions, (error, info) => {
+            if (error) {
+                console.error("Error sending initial boarding email:", error);
+                return res.status(500).json({ message: "Employee registered, but initial boarding email sending failed" });
+            } else {
+                console.log("Initial boarding email sent successfully:", info.response);
+
+                // Send Follow-up Boarding Email after 1 day
+                setTimeout(() => {
+                    const followUpBoardingMailOptions = {
+                        from: process.env.EMAIL_USER,
+                        to: email,
+                        subject: "Getting Started with HRM Platform",
+                        html: `
+                            <div style="font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; border-radius: 8px; max-width: 600px; margin: auto; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                                <div style="text-align: center; margin-bottom: 20px;">
+                                    <img src="https://static.vecteezy.com/system/resources/previews/007/263/716/non_2x/hrm-letter-logo-design-on-white-background-hrm-creative-initials-letter-logo-concept-hrm-letter-design-vector.jpg" 
+                                        alt="Welcome Image" 
+                                        style="max-width: 100px; height: auto; border-radius: 50%;" />
+                                </div>
+                                <p style="font-size: 18px; color: #333; text-align: center; font-weight: bold; margin: 0;">
+                                    Getting Started with HRM Platform
+                                </p>
+                                <p style="font-size: 16px; color: #555; text-align: center; margin:10px 75% 10px 0px;">
+                                    Dear <strong>${fullname}</strong>,
+                                </p>
+                                <p style="font-size: 14px; line-height: 1.6; color: #666; text-align: justify;">
+                                    We hope you are settling in well. Here are some resources to help you get started with the HRM Platform.
+                                </p>
+                                <ul style="font-size: 14px; color: #666; text-align: justify;">
+                                    <li>HRM Platform User Guide</li>
+                                    <li>Company Policies</li>
+                                    <li>Support Contact Information</li>
+                                </ul>
+                                <p style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
+                                    Best regards,<br>
+                                    <strong>The HRM Platform Team</strong>
+                                </p>
+                            </div>
+                        `
+                    };
+
+                    transporter.sendMail(followUpBoardingMailOptions, (error, info) => {
+                        if (error) {
+                            console.error("Error sending follow-up boarding email:", error);
+                        } else {
+                            console.log("Follow-up boarding email sent successfully:", info.response);
+                        }
+                    });
+                }, 24 * 60 * 60 * 1000); // 1 day delay
+
+                // Send Login Credentials Email after 5 minutes
+                setTimeout(() => {
+                    const credentialsMailOptions = {
+                        from: process.env.EMAIL_USER,
+                        to: email,
+                        subject: "Your HRM Platform Login Credentials",
+                        html: `
+                            <div style="font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; border-radius: 8px; max-width: 600px; margin: auto; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);">
+                                <div style="text-align: center; margin-bottom: 20px;">
+                                    <img src="https://static.vecteezy.com/system/resources/previews/007/263/716/non_2x/hrm-letter-logo-design-on-white-background-hrm-creative-initials-letter-logo-concept-hrm-letter-design-vector.jpg" 
+                                        alt="Welcome Image" 
+                                        style="max-width: 100px; height: auto; border-radius: 50%;" />
+                                </div>
+                                <p style="font-size: 18px; color: #333; text-align: center; font-weight: bold; margin: 0;">
+                                    Your HRM Platform Login Credentials
+                                </p>
+                                <p style="font-size: 16px; color: #555; text-align: center; margin:10px 75% 10px 0px;">
+                                    Dear <strong>${fullname}</strong>,
+                                </p>
+                                <p style="font-size: 14px; line-height: 1.6; color: #666; text-align: justify;">
+                                    Below are your login credentials for the HRM Platform:
+                                </p>
+                                <div style="background: #f1f1f1; padding: 15px; border-radius: 5px; margin: 20px 0; font-size: 14px;">
+                                    <p style="margin: 0;"><strong>Username:</strong> ${email}</p>
+                                    <p style="margin: 0;"><strong>Password:</strong> ${randomPassword}</p>
+                                </div>
+                                <p style="font-size: 14px; color: #666; text-align: justify; margin-bottom: 20px;">
+                                    Please log in and change your password as soon as possible for enhanced security.
+                                </p>
+                                <div style="text-align: center; margin-top: 20px;">
+                                    <a href="http://localhost:3000/" 
+                                       style="display: inline-block; padding: 10px 20px; background: #4CAF50; color: #fff; text-decoration: none; font-size: 16px; border-radius: 5px; font-weight: bold;">
+                                        Login to HRM Platform
+                                    </a>
+                                </div>
+                                <p style="font-size: 14px; color: #999; text-align: center; margin-top: 20px;">
+                                    Best regards,<br>
+                                    <strong>The HRM Platform Team</strong>
+                                </p>
+                            </div>
+                        `
+                    };
+
+                    transporter.sendMail(credentialsMailOptions, (error, info) => {
+                        if (error) {
+                            console.error("Error sending credentials email:", error);
+                        } else {
+                            console.log("Credentials email sent successfully:", info.response);
+                        }
+                    });
+                }, 5 * 60 * 1000); // 5 minutes delay
+
+                return res.status(201).json({ message: "Employee registered successfully" });
+            }
+        });
+    });
+});
+
+const MAX_LEAVE_DAYS = 30;
+
+// Apply for Leave
+app.post("/apply",authorizeRole(["Employee"]) , (req, res) => {
+    try {
+        const EmployeeID = req.user.id; // Extract EmployeeID from JWT Token
+        const { FromDate, ToDate, FromTime, ToTime, LeaveType, Reason } = req.body;
+
+        const fromDate = new Date(FromDate);
+        const toDate = new Date(ToDate);
+        const today = new Date();
+
+        // Calculate number of leave days
+        const leaveDays = Math.ceil((toDate - fromDate) / (1000 * 60 * 60 * 24)) + 1;
+
+        // Check if employee has exceeded leave quota
+        const leaveCountQuery = `SELECT SUM(JULIANDAY(ToDate) - JULIANDAY(FromDate) + 1) AS TotalLeaves 
+                                 FROM LeaveRequests WHERE EmployeeID = ? AND Status = 'Approved'`;
+        db.get(leaveCountQuery, [EmployeeID], (err, row) => {
+            if (err) {
+                return res.status(500).json({ message: "Database error", error: err.message });
+            }
+
+            const totalUsedLeaves = row?.TotalLeaves || 0;
+            if (totalUsedLeaves + leaveDays > MAX_LEAVE_DAYS) {
+                return res.status(400).json({ message: `Leave quota exceeded! You have ${MAX_LEAVE_DAYS - totalUsedLeaves} days left.` });
+            }
+
+            // Check if leave overlaps with an existing request
+            const overlapQuery = `SELECT * FROM LeaveRequests WHERE EmployeeID = ? 
+                                  AND (DATE(FromDate) <= DATE(?) AND DATE(ToDate) >= DATE(?))`;
+            db.get(overlapQuery, [EmployeeID, ToDate, FromDate], (err, existingLeave) => {
+                if (err) {
+                    return res.status(500).json({ message: "Database error", error: err.message });
+                }
+
+                if (existingLeave) {
+                    return res.status(400).json({ message: "Leave request conflicts with existing leave period." });
+                }
+                // Insert leave request
+                const insertQuery = `INSERT INTO LeaveRequests (EmployeeID, FromDate, ToDate, FromTime, ToTime, LeaveType, Reason, Status) 
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, 'Pending')`;
+                db.run(insertQuery, [EmployeeID, FromDate, ToDate, FromTime, ToTime, LeaveType, Reason], function (err) {
+                    if (err) {
+                        return res.status(500).json({ message: "Failed to apply for leave", error: err.message });
+                    }
+                    res.status(201).json({ message: "Leave request submitted successfully", LeaveID: this.lastID, Status: "Pending" });
+                });
+            });
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Unexpected error occurred", error: error.message });
+    }
+});
+
+
+
+// Total no of leaves applied by employee
+app.get("/leaves",authorizeRole(["Employee"]) ,(req, res) => {
+    const EmployeeID = req.user.id; // Get the employee ID from the JWT token
+
+    db.all(`SELECT * FROM LeaveRequests WHERE EmployeeID = ?`, [EmployeeID], (err, rows) => {
+        if (err) {
+            console.error("Database error:", err);
+            return res.status(500).json({ message: "Internal server error" });
+        }
+        return res.status(200).json({ data: rows });
+    });
+});
+
+//calculate total days count no of leaves applied by employee 
+
+app.get("/leavescount",authorizeRole(["Employee"]) ,(req, res) => {
+    const EmployeeID = req.user.id; // Get the employee ID from the JWT token
+
+    db.get(`SELECT SUM(JULIANDAY(ToDate) - JULIANDAY(FromDate) + 1) AS TotalLeaves FROM LeaveRequests WHERE EmployeeID = ?`, [EmployeeID], (err, row) => {
+        if (err) {
+            console.error("Database error:", err);
+            return res.status(500).json({ message: "Internal server error" });
+        }
+        return res.status(200).json({ TotalLeaves: row.TotalLeaves || 0 });
+    });
+});
+
+// delete all leave request
+app.delete("/leaves",authorizeRole(["Employee"]) ,(req, res) => {
+    const EmployeeID = req.user.id; // Get the employee ID from the JWT token
+
+    db.run(`DELETE FROM LeaveRequests WHERE EmployeeID = ?`, [EmployeeID], function (err) {
+        if (err) {
+            console.error("Database error:", err);
+            return res.status(500).json({ message: "Internal server error" });
+        }
+
+        if (this.changes === 0) {
+            return res.status(404).json({ message: "No leave requests found" });
+        }
+
+        return res.status(200).json({ message: "All leave requests deleted successfully" });
+    });
+});
+
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
